@@ -1,4 +1,8 @@
 from flask import Flask, jsonify,request, render_template
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+import os
+
 import numpy as np
 import pickle
 import sklearn
@@ -10,9 +14,25 @@ import seaborn as sns
 
 #loading models
 
+
+
 dtr = pickle.load(open('dtr.pkl','rb'))
 preprocessor = pickle.load(open('preprocessor.pkl','rb'))
 
+
+
+
+
+if "GOOGLE_API_KEY" not in os.environ:
+    os.environ["GOOGLE_API_KEY"] = "AIzaSyAInM7kCmXUlF9l7x0wwnE1jl12w3EPh30"
+
+# Instantiate the Gemini model
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-pro",
+    temperature=0.7,  # Balance creativity and factual correctness
+    timeout=30,       # Allow sufficient time for complex responses
+    max_retries=3,   # Retry mechanism in case of failures
+)
 def fetch_data_from_file():
     # Assuming data is stored in a CSV file named crop_yield_data.csv
     data = pd.read_csv('yield_df.csv')
@@ -57,7 +77,7 @@ def predict():
 @app.route('/mapping', methods=['GET'])
 def world_map():
     data = fetch_data_from_file()
-    top_crops_by_area = data.groupby("Area").apply(lambda group: group.nlargest(3, "hg/ha_yield")).reset_index(drop=True)
+    top_crops_by_area = data.groupby("Area", group_keys=False).apply(lambda group: group.nlargest(3, "hg/ha_yield")).reset_index(drop=True)
     m = folium.Map(location=[20.0, 0.0], zoom_start=2)
 
     countries = [
@@ -374,6 +394,61 @@ def create_yearly_yield_chart():
     plt.close()
     return chart_path
 
+
+# Route for the chatbot page
+@app.route('/chatbot')
+def chatbot():
+    return render_template('chatbot.html')
+
+@app.route('/ask', methods=['GET', 'POST'])
+def ask():
+    if request.method == 'GET':
+        return render_template('chatbot.html')
+    elif request.method == 'POST':
+        # Check if the request is JSON
+        if not request.is_json:
+            return jsonify({"error": "Request must be JSON"}), 400
+        
+        # Get JSON data
+        data = request.get_json()
+        query = data.get('query', '').strip()
+        
+        if not query:
+            return jsonify({"response": "Please enter a question."}), 400
+        
+        try:
+            response = ask_farming_question(query)
+            return jsonify({"response": response})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+
+
+# Function to handle farmer queries
+def ask_farming_question(query):
+    """Handles farmer queries and returns a response."""
+    try:
+        response = chain.invoke({"query": query})
+        return response.content
+    except Exception as e:
+        return f"An error occurred: {str(e)}"
+
+# Create a prompt template tailored for farmer Q&A
+prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            (
+                "You are an agricultural assistant designed to answer farmers' questions. "
+                "Provide helpful, accurate, and concise answers. If you don't know an answer, "
+                "recommend trusted agricultural resources."
+            ),
+        ),
+        ("human", "{query}"),
+    ]
+)
+
+chain = prompt | llm
 
 if __name__ == "__main__":
     app.run(debug=True)
